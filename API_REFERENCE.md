@@ -7,6 +7,7 @@
 ## Оглавление
 
 - [Конфигурационные define-ы (Flash/RAM)](#конфигурационные-define-ы-flashram)
+- [Логирование](#логирование)
 - [Типы](#типы)
 - [Циклы индикации](#циклы-индикации)
 - [Регистрация нагрузки](#регистрация-нагрузки)
@@ -20,7 +21,7 @@
 ## Конфигурационные define-ы (Flash/RAM)
 
 Задаются через `#define` ДО включения `stm32_load_pwm.h`. Подробные оценки памяти - см.
-`README.md`, раздел "Настройка памяти".
+`README.md`, раздел "Настройка через `#define`".
 
 | Define | По умолчанию | Описание |
 |---|---|---|
@@ -33,6 +34,45 @@
 Некорректные значения (`LOAD_PWM_MAX_LOADS == 0`, `LOAD_PWM_MAX_LEDS >= 255`,
 `LOAD_PWM_TABLE_QUALITY`/`LOAD_PWM_RAM_QUALITY` вне `{0,1,2}`) ловятся `#error` на этапе
 препроцессора - опечатка в значении define не пройдёт незамеченной в билд.
+
+---
+
+## Логирование
+
+Опционально, через `stm32_logger`. Выключено по умолчанию (`LOAD_PWM_LOG_ENABLE=0`) - `logger.h`
+не подключается вообще, накладных расходов нет. При `LOAD_PWM_LOG_ENABLE=1` вызывается
+`LOGGER_Log(code, source_id, value)` на значимых событиях ниже - никогда внутри `LOAD_PWM_Tick()`
+на каждый тик.
+
+Каждый код - отдельный `#ifndef`-переопределяемый `#define` (значения по умолчанию - диапазон
+`0x0D00..0x0D0F`), т.к. таблица кодов `stm32_logger` общая на всё приложение - при коллизии с
+другой библиотекой переопределите нужный код своим значением до включения `stm32_load_pwm.h`.
+
+| Define (код) | Значение по умолчанию | `source_id` | `value` | Когда |
+|---|---|---|---|---|
+| `LOAD_PWM_LOG_CODE_INIT_BAD_CONFIG` | `0x0D00` | 0 | 0 | `Init()`: `config` некорректен |
+| `LOAD_PWM_LOG_CODE_INIT_POOL_FULL` | `0x0D01` | channel | `LOAD_PWM_MAX_LOADS` | `Init()`: пул нагрузок исчерпан |
+| `LOAD_PWM_LOG_CODE_INIT_LED_POOL_FULL` | `0x0D02` | channel | `LOAD_PWM_MAX_LEDS` | `Init()`: пул LUT для LED исчерпан |
+| `LOAD_PWM_LOG_CODE_INIT_HAL_START_FAIL` | `0x0D03` | channel | код `HAL_StatusTypeDef` | `Init()`: `HAL_TIM_PWM_Start()` не `HAL_OK` |
+| `LOAD_PWM_LOG_CODE_INIT_OK` | `0x0D04` | channel | `LOAD_PWM_Type_t` | `Init()`: успешная регистрация |
+| `LOAD_PWM_LOG_CODE_CYCLE_START` | `0x0D05` | channel | `LOAD_PWM_Cycle_t` | `Start()`/`StartOnce()`: цикл запущен |
+| `LOAD_PWM_LOG_CODE_CYCLE_DONE` | `0x0D06` | channel | `LOAD_PWM_Cycle_t` | однократный цикл сам завершился |
+| `LOAD_PWM_LOG_CODE_STOP` | `0x0D07` | channel | 0 | `Stop()`: явная остановка |
+| `LOAD_PWM_LOG_CODE_STOP_ALL` | `0x0D08` | 0 | число остановленных | `StopAll()`, один вызов на всю операцию |
+| `LOAD_PWM_LOG_CODE_NULL_HANDLE` | `0x0D09` | 0 | 0 | любой вызов API с `h == NULL` |
+| `LOAD_PWM_LOG_CODE_GLOBAL_BRIGHTNESS` | `0x0D0A` | 0 | percent (0..100) | `SetGlobalBrightness()` |
+
+**Требование на Cortex-M0/M0+:** `stm32_logger` по умолчанию пишет через `ITM_SendChar()`,
+которого на M0 нет - обязательно вызовите `LOGGER_Init()` со своей `console_fn` до первого
+`LOAD_PWM_Init()`, иначе сборка `logger.c` не пройдёт.
+
+**Подключение к общей таблице кодов (`stm32_logger` v1.4+):** адресное пространство `0x0D`
+зарезервировано за `stm32_load_pwm` как `LOG_ADDR_LOAD_PWM` в `logger_codes.h` - блок кодов
+`LOG_CODE_LOAD_PWM_*` активируется define-ом `LOGGER_ENABLE_LOAD_PWM` до `#include
+"logger_codes.h"`. Числовые значения совпадают с таблицей выше - переопределите нужные
+`LOAD_PWM_LOG_CODE_*` соответствующими `LOG_CODE_LOAD_PWM_*` до `#include "stm32_load_pwm.h"`,
+чтобы коды попали в буферизацию/описание `stm32_logger`. Без этого шага коды работают как
+раньше, просто вне общей таблицы.
 
 ---
 

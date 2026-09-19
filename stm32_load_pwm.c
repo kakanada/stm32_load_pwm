@@ -3,8 +3,8 @@
  * @file    stm32_load_pwm.c
  * @brief   Реализация библиотеки управления ШИМ-нагрузкой (см. stm32_load_pwm.h).
  * @author  Mechanic
- * @date    18.09.2026
- * @version 0.3
+ * @date    19.09.2026
+ * @version 0.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -504,6 +504,10 @@ static HAL_StatusTypeDef load_pwm_start_internal(LOAD_PWM_Handle_t *h, LOAD_PWM_
 {
     if ((h == NULL) || (cycle >= LOAD_PWM_CYCLE_COUNT) || (period_ms == 0U))
     {
+        if (h == NULL)
+        {
+            LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_NULL_HANDLE, 0, 0);
+        }
         return HAL_ERROR;
     }
 
@@ -550,6 +554,8 @@ static HAL_StatusTypeDef load_pwm_start_internal(LOAD_PWM_Handle_t *h, LOAD_PWM_
     h->phase_acc = phase_acc;
     h->mode      = (uint8_t)mode;
 
+    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_CYCLE_START, h->channel, (int32_t)cycle);
+
     return HAL_OK;
 }
 
@@ -561,12 +567,14 @@ LOAD_PWM_Handle_t *LOAD_PWM_Init(const LOAD_PWM_Config_t *config)
 {
     if ((config == NULL) || (config->htim == NULL) || (config->tick_freq_hz == 0U))
     {
+        LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_BAD_CONFIG, 0, 0);
         return NULL;
     }
 
     LOAD_PWM_Handle_t *h = load_pwm_find_or_alloc_slot(config->htim, config->channel);
     if (h == NULL)
     {
+        LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_POOL_FULL, config->channel, LOAD_PWM_MAX_LOADS);
         return NULL; /* пул исчерпан */
     }
 
@@ -621,10 +629,12 @@ LOAD_PWM_Handle_t *LOAD_PWM_Init(const LOAD_PWM_Config_t *config)
              * быть не может. #if, а не рантайм-сравнение с константой 0 -
              * иначе "s_led_lut_used_count >= 0" (u8 >= 0) триггерит
              * -Wtype-limits как "сравнение всегда истинно". */
+            LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_LED_POOL_FULL, config->channel, LOAD_PWM_MAX_LEDS);
             return NULL;
 #else
             if (s_led_lut_used_count >= LOAD_PWM_MAX_LEDS)
             {
+                LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_LED_POOL_FULL, config->channel, LOAD_PWM_MAX_LEDS);
                 return NULL; /* пул LUT для LED исчерпан - см. LOAD_PWM_MAX_LEDS */
             }
 #endif
@@ -701,12 +711,14 @@ LOAD_PWM_Handle_t *LOAD_PWM_Init(const LOAD_PWM_Config_t *config)
      * тихо остановлена". pwm_min/pwm_max/lut_index (калибровка) назад не
      * откатываются даже при ошибке - это не "работающее прямо сейчас"
      * состояние, а настройки для следующего успешного Init(). */
-    if (HAL_TIM_PWM_Start(config->htim, config->channel) != HAL_OK)
+    HAL_StatusTypeDef pwm_start_status = HAL_TIM_PWM_Start(config->htim, config->channel);
+    if (pwm_start_status != HAL_OK)
     {
         /* Для НОВОГО хэндла used ещё не выставлен (см. ниже) - слот и так
          * свободен, откатывать нечего. Слот LUT (если выделялся) не
          * освобождается индивидуально - см. комментарий у
          * s_led_lut_used_count. */
+        LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_HAL_START_FAIL, config->channel, (int32_t)pwm_start_status);
         return NULL;
     }
 
@@ -724,6 +736,8 @@ LOAD_PWM_Handle_t *LOAD_PWM_Init(const LOAD_PWM_Config_t *config)
 
     load_pwm_write_output(h, h->background_pwm);
 
+    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_INIT_OK, config->channel, (int32_t)config->load_type);
+
     return h;
 }
 
@@ -735,6 +749,7 @@ HAL_StatusTypeDef LOAD_PWM_SetBrightness(LOAD_PWM_Handle_t *h, float percent, ui
 {
     if (h == NULL)
     {
+        LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_NULL_HANDLE, 0, 0);
         return HAL_ERROR;
     }
 
@@ -825,6 +840,7 @@ HAL_StatusTypeDef LOAD_PWM_Stop(LOAD_PWM_Handle_t *h)
 {
     if (h == NULL)
     {
+        LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_NULL_HANDLE, 0, 0);
         return HAL_ERROR;
     }
 
@@ -833,11 +849,15 @@ HAL_StatusTypeDef LOAD_PWM_Stop(LOAD_PWM_Handle_t *h)
     h->current_pwm = h->background_pwm;
     load_pwm_write_output(h, h->background_pwm);
 
+    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_STOP, h->channel, 0);
+
     return HAL_OK;
 }
 
 void LOAD_PWM_StopAll(void)
 {
+    uint32_t stopped_count = 0U;
+
     for (uint32_t i = 0U; i < LOAD_PWM_MAX_LOADS; i++)
     {
         if (s_pool[i].used == 0U)
@@ -850,7 +870,13 @@ void LOAD_PWM_StopAll(void)
         h->fade_active = 0U;
         h->current_pwm = h->background_pwm;
         load_pwm_write_output(h, h->background_pwm);
+        stopped_count++;
     }
+
+    /* Один агрегированный лог на весь вызов, а не по одному на нагрузку -
+     * StopAll() уже сам по себе редкий/аварийный вызов, но нагрузок может
+     * быть LOAD_PWM_MAX_LOADS штук, лог по каждой был бы спамом. */
+    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_STOP_ALL, 0, (int32_t)stopped_count);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -866,6 +892,8 @@ void LOAD_PWM_SetGlobalBrightness(float percent)
      * усечение; при percent=100 даёт ровно LOAD_PWM_GLOBAL_MULT_FULL, что
      * включает быстрый путь без умножения в load_pwm_write_output(). */
     s_global_multiplier_q16 = (uint32_t)(((double)p / 100.0) * (double)LOAD_PWM_GLOBAL_MULT_FULL + 0.5);
+
+    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_GLOBAL_BRIGHTNESS, 0, (int32_t)(p + 0.5f));
 
     /* Активные циклы/фейды сами подхватят новый множитель на следующем
      * вызове LOAD_PWM_Tick() для них - а вот простаивающие (статичный фон)
@@ -914,6 +942,9 @@ void LOAD_PWM_Tick(uint32_t tick_source_id)
                     h->mode = (uint8_t)LOAD_PWM_MODE_NONE;
                     h->current_pwm = h->background_pwm;
                     load_pwm_write_output(h, h->background_pwm);
+                    /* Событие редкое (раз на завершившийся цикл, не на тик) -
+                     * не спам, в отличие от лога на каждый LOAD_PWM_Tick(). */
+                    LOAD_PWM_LOG(LOAD_PWM_LOG_CODE_CYCLE_DONE, h->channel, (int32_t)h->cycle_id);
                     continue; /* цикл завершён - яркость на этом такте больше не трогаем */
                 }
                 /* LOAD_PWM_MODE_REPEAT - остаток (new_acc) уже корректно
