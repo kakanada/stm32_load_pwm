@@ -5,8 +5,8 @@
  *          гамма-коррекция для светодиодов, линейный режим для прочей
  *          нагрузки (лампы накаливания, кулеры, DC-моторы, электромагниты).
  * @author  Mechanic
- * @date    18.09.2026
- * @version 0.3
+ * @date    19.09.2026
+ * @version 0.4
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
@@ -84,6 +84,9 @@
  *          5. Управляете нагрузкой через LOAD_PWM_SetBrightness,
  *             LOAD_PWM_Start/StartOnce/Stop, LOAD_PWM_StopAll(),
  *             LOAD_PWM_SetGlobalBrightness().
+ *          6. (Опционально) Задаёте LOAD_PWM_LOG_ENABLE=1 до включения этого
+ *             заголовка, если в проекте есть stm32_logger - см. раздел
+ *             "ЛОГИРОВАНИЕ" ниже.
  *
  *          === ПОТОКОБЕЗОПАСНОСТЬ / ВЫЗОВ ИЗ ПРЕРЫВАНИЯ ===
  *          LOAD_PWM_Tick() обычно вызывается ИЗ ПРЕРЫВАНИЯ таймера, тогда
@@ -115,6 +118,126 @@ extern "C" {
 #include <stdint.h>
 #include "main.h"   /* CubeMX: тянет за собой правильный stm32xxxx_hal.h с типом
                        TIM_HandleTypeDef, используемым во всех функциях ниже */
+
+/* ------------------------------------------------------------------------ */
+/*  Логирование (опционально, через stm32_logger)                           */
+/* ------------------------------------------------------------------------ */
+/**
+ * У stm32_logger нет своего define-переключателя (LOGGER_Log/LOGGER_Init
+ * компилируются всегда как есть) - опциональность подключения реализована
+ * здесь, по паттерну PREFIX_SIM_ENABLE из proект_шаблон/biss-c_irs-i_stm32:
+ * при LOAD_PWM_LOG_ENABLE == 0 (умолчание) LOAD_PWM_LOG(...) разворачивается
+ * в ((void)0), logger.h вообще не включается - ноль накладных расходов по
+ * Flash/RAM/времени. Включается явно через #define ДО включения этого
+ * заголовка.
+ *
+ * @warning ТРАНЗИТИВНОЕ ОГРАНИЧЕНИЕ stm32_logger: на Cortex-M0/M0+ (нет
+ *          блока ITM) LOGGER_Log() по умолчанию (без своей console_fn при
+ *          LOGGER_Init()) не соберётся - на M0 обязательно вызовите
+ *          LOGGER_Init() со своей console_fn (например, вывод в UART) до
+ *          первого LOAD_PWM_Init(), иначе сборка упадёт на этапе компиляции
+ *          logger.c, не в рантайме. Подробности - документация stm32_logger.
+ *
+ * Логируются только значимые события (ошибки, переходы состояния -
+ * Init/Start/Stop/StopAll/SetGlobalBrightness) - НИКОГДА не в
+ * LOAD_PWM_Tick() (горячий путь, вызывается на каждый тик - лог там means
+ * спам и потерю производительности, особенно на МК без FPU).
+ *
+ * Коды событий (LOAD_PWM_LOG_CODE_*) ниже - каждый #ifndef-переопределяем
+ * отдельно: у stm32_logger таблица кодов (logger_codes.h) ОДНА на всё
+ * конечное приложение, а не своя у каждой библиотеки-компонента, поэтому
+ * итоговый проект вписывает эти коды в свою таблицу под собственной
+ * нумерацией через #define ДО включения этого заголовка. Значения по
+ * умолчанию ниже (диапазон 0x0D00..0x0D0F) - ориентировочные, ни с одним
+ * конкретным проектом не согласованы; при коллизии с другой библиотекой в
+ * вашем приложении переопределите.
+ *
+ * Начиная со stm32_logger v1.4, за stm32_load_pwm в общем logger_codes.h
+ * закреплено адресное пространство 0x0D (LOG_ADDR_LOAD_PWM), значения
+ * совпадают с умолчаниями ниже. Чтобы подключиться к общей таблице (вместо
+ * захардкоженных чисел) - определите LOGGER_ENABLE_LOAD_PWM до #include
+ * "logger_codes.h" и переопределите нужные LOAD_PWM_LOG_CODE_* значениями
+ * LOG_CODE_LOAD_PWM_* до этого заголовка. Шаг полностью опциональный -
+ * подробности см. README.md/API_REFERENCE.md, раздел "Логирование".
+ */
+#ifndef LOAD_PWM_LOG_ENABLE
+#define LOAD_PWM_LOG_ENABLE 0
+#endif
+
+#if LOAD_PWM_LOG_ENABLE
+#include "logger.h"
+#define LOAD_PWM_LOG(code, source_id, value) \
+    LOGGER_Log((code), (uint16_t)(source_id), (int32_t)(value))
+#else
+#define LOAD_PWM_LOG(code, source_id, value) ((void)0)
+#endif
+
+/** LOAD_PWM_Init(): config некорректен (NULL, htim == NULL либо
+ *  tick_freq_hz == 0). source_id/value - не применимо (0/0). */
+#ifndef LOAD_PWM_LOG_CODE_INIT_BAD_CONFIG
+#define LOAD_PWM_LOG_CODE_INIT_BAD_CONFIG      0x0D00U
+#endif
+
+/** LOAD_PWM_Init(): пул LOAD_PWM_MAX_LOADS исчерпан. source_id - channel
+ *  из config, value - LOAD_PWM_MAX_LOADS. */
+#ifndef LOAD_PWM_LOG_CODE_INIT_POOL_FULL
+#define LOAD_PWM_LOG_CODE_INIT_POOL_FULL       0x0D01U
+#endif
+
+/** LOAD_PWM_Init(): пул LUT для LED (LOAD_PWM_MAX_LEDS) исчерпан.
+ *  source_id - channel, value - LOAD_PWM_MAX_LEDS. */
+#ifndef LOAD_PWM_LOG_CODE_INIT_LED_POOL_FULL
+#define LOAD_PWM_LOG_CODE_INIT_LED_POOL_FULL   0x0D02U
+#endif
+
+/** LOAD_PWM_Init(): HAL_TIM_PWM_Start() вернул не HAL_OK. source_id -
+ *  channel, value - код возврата HAL_StatusTypeDef. */
+#ifndef LOAD_PWM_LOG_CODE_INIT_HAL_START_FAIL
+#define LOAD_PWM_LOG_CODE_INIT_HAL_START_FAIL  0x0D03U
+#endif
+
+/** LOAD_PWM_Init(): нагрузка успешно зарегистрирована. source_id -
+ *  channel, value - LOAD_PWM_Type_t (0 = LED, 1 = LINEAR). */
+#ifndef LOAD_PWM_LOG_CODE_INIT_OK
+#define LOAD_PWM_LOG_CODE_INIT_OK              0x0D04U
+#endif
+
+/** LOAD_PWM_Start()/StartOnce(): цикл индикации запущен. source_id -
+ *  channel, value - LOAD_PWM_Cycle_t. */
+#ifndef LOAD_PWM_LOG_CODE_CYCLE_START
+#define LOAD_PWM_LOG_CODE_CYCLE_START          0x0D05U
+#endif
+
+/** Однократный цикл (StartOnce) сам завершился по окончании периода
+ *  (внутри LOAD_PWM_Tick(), но событие редкое - раз на цикл, не на тик).
+ *  source_id - channel, value - LOAD_PWM_Cycle_t. */
+#ifndef LOAD_PWM_LOG_CODE_CYCLE_DONE
+#define LOAD_PWM_LOG_CODE_CYCLE_DONE           0x0D06U
+#endif
+
+/** LOAD_PWM_Stop(): цикл остановлен явно. source_id - channel, value -
+ *  не применимо (0). */
+#ifndef LOAD_PWM_LOG_CODE_STOP
+#define LOAD_PWM_LOG_CODE_STOP                 0x0D07U
+#endif
+
+/** LOAD_PWM_StopAll(): аварийный сброс всех нагрузок. source_id - не
+ *  применимо (0), value - число реально остановленных нагрузок. */
+#ifndef LOAD_PWM_LOG_CODE_STOP_ALL
+#define LOAD_PWM_LOG_CODE_STOP_ALL             0x0D08U
+#endif
+
+/** Вызов API (SetBrightness/Start/StartOnce/Stop) с h == NULL.
+ *  source_id/value - не применимо (0/0). */
+#ifndef LOAD_PWM_LOG_CODE_NULL_HANDLE
+#define LOAD_PWM_LOG_CODE_NULL_HANDLE          0x0D09U
+#endif
+
+/** LOAD_PWM_SetGlobalBrightness(): изменён глобальный множитель.
+ *  source_id - не применимо (0), value - percent (0..100, округлено). */
+#ifndef LOAD_PWM_LOG_CODE_GLOBAL_BRIGHTNESS
+#define LOAD_PWM_LOG_CODE_GLOBAL_BRIGHTNESS    0x0D0AU
+#endif
 
 /* ------------------------------------------------------------------------ */
 /*  Размеры пулов                                                           */

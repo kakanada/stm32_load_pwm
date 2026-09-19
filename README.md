@@ -99,7 +99,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 Полный список функций API с подробным описанием каждой — см.
 [API_REFERENCE.md](Проекты/stm32_load_pwm/git/API_REFERENCE.md).
 
-## Настройка памяти: два независимых уровня качества
+## Настройка через `#define`
 
 Библиотека даёт выбрать компромисс между потребляемой памятью и качеством ШИМ по двум независимым
 осям, задаваемым через `#define` до включения `stm32_load_pwm.h` (например в вашем `main.h`). Если
@@ -152,6 +152,42 @@ RAM = LOAD_PWM_MAX_LOADS * <размер хэндла>  +  LOAD_PWM_MAX_LEDS * <
 
 Для этого примера суммарный расход памяти ориентировочно: Flash ~3.6 КБ, RAM ~48×8 + 34×4 ≈ 520
 байт.
+
+### Логирование (опционально, через stm32_logger)
+
+Библиотека может опционально звать `stm32_logger` на значимых событиях (ошибки, регистрация
+нагрузки, запуск/остановка цикла, изменение "ночного" множителя) — НИКОГДА не на каждый
+`LOAD_PWM_Tick()`. По умолчанию выключено (`LOAD_PWM_LOG_ENABLE=0`) и не требует `stm32_logger` в
+проекте вообще:
+
+```c
+#define LOAD_PWM_LOG_ENABLE 1
+#include "stm32_load_pwm.h"
+```
+
+На Cortex-M0/M0+ (например STM32F030) — транзитивное требование `stm32_logger`: обязательно
+вызовите `LOGGER_Init()` со своей `console_fn` (например, вывод в UART) до первого
+`LOAD_PWM_Init()`, иначе сборка `logger.c` не пройдёт (в его коде по умолчанию используется
+`ITM_SendChar()`, которого на M0 нет). Полный список кодов событий и их `value` — см.
+`API_REFERENCE.md`.
+
+Начиная со `stm32_logger` v1.4, коды можно подключить к общей таблице `logger_codes.h` (адресное
+пространство `0x0D`, define `LOGGER_ENABLE_LOAD_PWM`) вместо захардкоженных чисел — переопределите
+`LOAD_PWM_LOG_CODE_*` значениями `LOG_CODE_LOAD_PWM_*` до `#include "stm32_load_pwm.h"`:
+
+```c
+#define LOGGER_ENABLE_LOAD_PWM
+#include "logger_codes.h"
+
+#define LOAD_PWM_LOG_CODE_INIT_OK   LOG_CODE_LOAD_PWM_INIT_OK
+/* ...аналогично для остальных LOAD_PWM_LOG_CODE_*, см. logger_codes.h */
+
+#define LOAD_PWM_LOG_ENABLE 1
+#include "stm32_load_pwm.h"
+```
+
+Без этого переопределения библиотека продолжает работать со своими значениями по умолчанию
+(0x0D00..0x0D0A) — подключение к `logger_codes.h` полностью опционально.
 
 ## Честные ограничения
 
