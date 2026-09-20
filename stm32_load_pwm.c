@@ -3,8 +3,8 @@
  * @file    stm32_load_pwm.c
  * @brief   Реализация библиотеки управления ШИМ-нагрузкой (см. stm32_load_pwm.h).
  * @author  Mechanic
- * @date    19.09.2026
- * @version 0.4
+ * @date    21.09.2026
+ * @version 0.5
  *
  * @copyright Copyright (c) 2026 Mechanic.
  *            Свободное некоммерческое использование и модификация. Условия
