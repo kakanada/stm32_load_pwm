@@ -359,6 +359,8 @@ static uint32_t s_global_multiplier_q16 = LOAD_PWM_GLOBAL_MULT_FULL;
  *         для NaN истинна (т.к. "percent>0.0f" для NaN ложно) - NaN уходит в
  *         безопасный 0.0f, как и любой другой некорректный/отрицательный
  *         вход. Поведение для нормальных чисел и +-inf не меняется.
+ * @param  percent Значение процента (любое, включая NaN/inf).
+ * @return Процент, ограниченный диапазоном [0, 100].
  */
 static float load_pwm_clamp_percent(float percent)
 {
@@ -381,6 +383,9 @@ static float load_pwm_clamp_percent(float percent)
  *         хэндле. Вызывается как из Tick() (продвижение цикла), так и вне
  *         её (SetBrightness) - в обоих случаях быстро (без деления, только
  *         сдвиг/маска/умножение).
+ * @param  h      Хэндл нагрузки.
+ * @param  visual Визуальная яркость (0..255).
+ * @return Значение ШИМ (тики CCR).
  */
 static LOAD_PWM_Duty_t load_pwm_visual_to_duty(const LOAD_PWM_Handle_t *h, uint16_t visual)
 {
@@ -418,6 +423,8 @@ static LOAD_PWM_Duty_t load_pwm_visual_to_duty(const LOAD_PWM_Handle_t *h, uint1
  *         платит за одно целочисленное 64-битное произведение вместо
  *         программной эмуляции float, которая потребовалась бы на МК без
  *         FPU (Cortex-M0/M0+).
+ * @param  h            Хэндл нагрузки.
+ * @param  logical_duty Логическая скважность (без глобального множителя).
  */
 static void load_pwm_write_output(LOAD_PWM_Handle_t *h, LOAD_PWM_Duty_t logical_duty)
 {
@@ -449,6 +456,9 @@ static void load_pwm_write_output(LOAD_PWM_Handle_t *h, LOAD_PWM_Duty_t logical_
  *         независимо от реального разрешения ARR/LOAD_PWM_RAM_QUALITY, что
  *         прямо противоречит заявленной "точной линейной формуле" для
  *         линейной нагрузки.
+ * @param  h       Хэндл нагрузки (LOAD_PWM_TYPE_LINEAR).
+ * @param  percent Процент яркости (0..100).
+ * @return Значение ШИМ (тики CCR).
  */
 static LOAD_PWM_Duty_t load_pwm_percent_to_duty_linear(const LOAD_PWM_Handle_t *h, float percent)
 {
@@ -463,9 +473,13 @@ static LOAD_PWM_Duty_t load_pwm_percent_to_duty_linear(const LOAD_PWM_Handle_t *
     return (LOAD_PWM_Duty_t)(duty_d + 0.5); /* округление, не усечение */
 }
 
-/** Ищет свободный слот в пуле либо уже зарегистрированный (htim, channel) -
- *  для идемпотентности повторного LOAD_PWM_Init(). NULL, если пул полон и
- *  совпадения не найдено. */
+/**
+ * @brief   Ищет свободный слот в пуле либо уже зарегистрированный (htim,
+ *          channel) - для идемпотентности повторного LOAD_PWM_Init().
+ * @param   htim    Таймер, для которого ищется слот.
+ * @param   channel Канал таймера.
+ * @return  Указатель на слот, либо NULL, если пул полон и совпадения не найдено.
+ */
 static LOAD_PWM_Handle_t *load_pwm_find_or_alloc_slot(TIM_HandleTypeDef *htim, uint32_t channel)
 {
     uint32_t free_index = LOAD_PWM_MAX_LOADS;
@@ -497,6 +511,13 @@ static LOAD_PWM_Handle_t *load_pwm_find_or_alloc_slot(TIM_HandleTypeDef *htim, u
 /**
  * @brief  Общая внутренняя реализация запуска цикла (используется и
  *         LOAD_PWM_Start, и LOAD_PWM_StartOnce).
+ * @param  h              Хэндл нагрузки.
+ * @param  cycle          Форма цикла индикации.
+ * @param  phase_shift    Сдвиг фазы (доля периода, 0..1).
+ * @param  period_ms      Период цикла в миллисекундах.
+ * @param  mode           Режим (повтор/однократно).
+ * @param  allow_continue Разрешить не перезапускать уже идущий такой же REPEAT-цикл.
+ * @return HAL_OK при успехе, HAL_ERROR при неверных аргументах.
  */
 static HAL_StatusTypeDef load_pwm_start_internal(LOAD_PWM_Handle_t *h, LOAD_PWM_Cycle_t cycle,
                                                  float phase_shift, uint32_t period_ms,
